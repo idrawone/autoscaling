@@ -112,6 +112,13 @@ func (c *ExecutorCore) getActions() timedActions {
 	return *c.actions
 }
 
+func (c *ExecutorCore) withLock(with func(*core.State)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	with(c.core)
+}
+
 func (c *ExecutorCore) update(with func(*core.State)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
