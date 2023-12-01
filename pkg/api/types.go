@@ -50,6 +50,8 @@ const (
 	// Changes from v1.1:
 	//
 	// * Supports fractional CPU
+	//
+	// Last used in release version v0.19.1.
 	PluginProtoV2_0
 
 	// PluginProtoV2_1 represents v2.1 of the agent<->scheduler plugin protocol.
@@ -58,8 +60,17 @@ const (
 	//
 	// * added AgentRequest.LastPermit
 	//
-	// Currently the latest version.
+	// Last used in release version <TODO>.
 	PluginProtoV2_1
+
+	// PluginProtoV3_0 represents v3.0 of the agent<->scheduler plugin protocol.
+	//
+	// Changes from v2.0:
+	//
+	// * Memory quantities now use "number of bytes" instead of "number of memory slots"
+	//
+	// Currently the latest version.
+	PluginProtoV3_0
 
 	// latestPluginProtoVersion represents the latest version of the agent<->scheduler plugin
 	// protocol
@@ -84,6 +95,8 @@ func (v PluginProtoVersion) String() string {
 		return "v2.0"
 	case PluginProtoV2_1:
 		return "v2.1"
+	case PluginProtoV3_0:
+		return "v3.0"
 	default:
 		diff := v - latestPluginProtoVersion
 		return fmt.Sprintf("<unknown = %v + %d>", latestPluginProtoVersion, diff)
@@ -105,6 +118,14 @@ func (v PluginProtoVersion) AllowsNilMetrics() bool {
 
 func (v PluginProtoVersion) SupportsFractionalCPU() bool {
 	return v >= PluginProtoV2_0
+}
+
+// RepresentsMemoryAsBytes returns whether this version of the protocol uses byte quantities to
+// refer to memory amounts, rather than a number of memory slots.
+//
+// This is true for version v3.0 and greater.
+func (v PluginProtoVersion) RepresentsMemoryAsBytes() bool {
+	return v >= PluginProtoV3_0
 }
 
 // AgentRequest is the type of message sent from an autoscaler-agent to the scheduler plugin
@@ -144,6 +165,57 @@ func (r AgentRequest) ProtocolRange() VersionRange[PluginProtoVersion] {
 	}
 }
 
+// Bytes represents a number of bytes, with custom marshaling / unmarshaling that goes through
+// resource.Quantity in order to have simplified values over wire
+type Bytes uint64
+
+// BytesFromResourceQuantity converts resource.Quantity into Bytes
+func BytesFromResourceQuantity(r resource.Quantity) Bytes {
+	return Bytes(uint64(r.Value()))
+}
+
+// ToResourceQuantity converts a Bytes to resource.Quantity - typically used for formatting and/or
+// serialization
+func (b Bytes) ToResourceQuantity() *resource.Quantity {
+	return resource.NewQuantity(int64(b), resource.BinarySI)
+}
+
+// AsFloat64 converts a Bytes into float64 of the same amount
+func (b Bytes) AsFloat64() float64 {
+	return float64(b)
+}
+
+func (b *Bytes) UnmarshalJSON(data []byte) error {
+	var quantity resource.Quantity
+	err := json.Unmarshal(data, &quantity)
+	if err != nil {
+		return err
+	}
+
+	*b = BytesFromResourceQuantity(quantity)
+	return nil
+}
+
+func (b Bytes) MarshalJSON() ([]byte, error) {
+	// To (temporarily) support multiple API versions, we should output smaller values as integers.
+	// Otherwise, resource.Quantity will always format as a string, which is incompatible with
+	// earllier versions of the agent<->scheduler plugin API.
+	if b < 1024 {
+		return json.Marshal(uint64(b))
+	}
+
+	return json.Marshal(b.ToResourceQuantity())
+}
+
+func (b Bytes) Format(state fmt.State, verb rune) {
+	switch {
+	case verb == 'v' && state.Flag('#'):
+		state.Write([]byte(fmt.Sprintf("%v", uint64(b))))
+	default:
+		state.Write([]byte(b.ToResourceQuantity().String()))
+	}
+}
+
 // Resources represents an amount of CPU and memory (via memory slots)
 //
 // When used in an AgentRequest, it represents the desired total amount of resources. When
@@ -160,15 +232,14 @@ func (r AgentRequest) ProtocolRange() VersionRange[PluginProtoVersion] {
 // In all cases, each resource type is considered separately from the others.
 type Resources struct {
 	VCPU vmapi.MilliCPU `json:"vCPUs"`
-	// Mem gives the number of slots of memory (typically 1G ea.) requested. The slot size is set by
-	// the value of the VM's VirtualMachineSpec.Guest.MemorySlotSize.
-	Mem uint16 `json:"mem"`
+	// Mem gives the number of bytes of memory requested
+	Mem Bytes `json:"mem"`
 }
 
 // MarshalLogObject implements zapcore.ObjectMarshaler, so that Resources can be used with zap.Object
 func (r Resources) MarshalLogObject(enc zapcore.ObjectEncoder) error {
 	enc.AddString("vCPU", fmt.Sprintf("%v", r.VCPU))
-	enc.AddUint16("mem", r.Mem)
+	enc.AddString("mem", fmt.Sprintf("%v", r.Mem))
 	return nil
 }
 
@@ -225,7 +296,7 @@ func (r Resources) Max(cmp Resources) Resources {
 func (r Resources) Mul(factor uint16) Resources {
 	return Resources{
 		VCPU: vmapi.MilliCPU(factor) * r.VCPU,
-		Mem:  factor * r.Mem,
+		Mem:  Bytes(factor) * r.Mem,
 	}
 }
 
@@ -247,10 +318,10 @@ func (r Resources) IncreaseFrom(old Resources) MoreResources {
 }
 
 // ConvertToRaw produces the Allocation equivalent to these Resources with the given slot size
-func (r Resources) ConvertToAllocation(memSlotSize *resource.Quantity) Allocation {
+func (r Resources) ConvertToAllocation() Allocation {
 	return Allocation{
 		Cpu: r.VCPU.ToResourceQuantity().AsApproximateFloat64(),
-		Mem: uint64(int64(r.Mem) * memSlotSize.Value()),
+		Mem: uint64(r.Mem),
 	}
 }
 

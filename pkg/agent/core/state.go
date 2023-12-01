@@ -29,8 +29,6 @@ import (
 
 	"go.uber.org/zap"
 
-	vmapi "github.com/neondatabase/autoscaling/neonvm/apis/neonvm/v1"
-
 	"github.com/neondatabase/autoscaling/pkg/api"
 	"github.com/neondatabase/autoscaling/pkg/util"
 )
@@ -670,9 +668,8 @@ func (s *State) DesiredResourcesFromMetricsOrRequestedUpscaling(now time.Time) (
 		// that to CUs
 		//
 		// NOTE: use uint64 for calculations on bytes as uint32 can overflow
-		memGoalBytes := uint64(math.Round(float64(s.metrics.MemoryUsageBytes) / s.scalingConfig().MemoryUsageFractionTarget))
-		bytesPerCU := uint64(int64(s.plugin.computeUnit.Mem) * s.vm.Mem.SlotSize.Value())
-		memGoalCU := uint32(memGoalBytes / bytesPerCU)
+		memGoalBytes := api.Bytes(math.Round(float64(s.metrics.MemoryUsageBytes) / s.scalingConfig().MemoryUsageFractionTarget))
+		memGoalCU := uint32(memGoalBytes / s.plugin.computeUnit.Mem)
 
 		goalCU = util.Max(cpuGoalCU, memGoalCU)
 	}
@@ -839,8 +836,8 @@ func (s *State) minRequiredResourcesForDeniedDownscale(computeUnit api.Resources
 	// phrasing it like this cleanly handles some subtle edge cases when denied.current isn't a
 	// multiple of the compute unit.
 	return api.Resources{
-		VCPU: util.Min(denied.current.VCPU, computeUnit.VCPU*vmapi.MilliCPU(1+uint32(denied.requested.VCPU/computeUnit.VCPU))),
-		Mem:  util.Min(denied.current.Mem, computeUnit.Mem*(1+uint16(denied.requested.Mem/computeUnit.Mem))),
+		VCPU: util.Min(denied.current.VCPU, computeUnit.VCPU*(1+denied.requested.VCPU/computeUnit.VCPU)),
+		Mem:  util.Min(denied.current.Mem, computeUnit.Mem*(1+denied.requested.Mem/computeUnit.Mem)),
 	}
 }
 
@@ -1091,8 +1088,7 @@ func (h NeonVMHandle) RequestSuccessful(now time.Time) {
 	// just because the request completed. It takes longer for the reconcile cycle(s) to make the
 	// necessary changes.
 	// See the comments in (*State).UpdatedVM() for more info.
-	h.s.vm.Cpu.Use = resources.VCPU
-	h.s.vm.Mem.Use = resources.Mem
+	h.s.vm.SetUsing(resources)
 
 	h.s.neonvm.ongoingRequested = nil
 }
