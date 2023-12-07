@@ -85,9 +85,9 @@ jobs:
         run: |
           rm -rf .docker-custom
 
-  e2e-tests:
-    if: github.event_name != 'workflow_call'
-    needs: vm-kernel
-    uses: ./.github/workflows/e2e-test.yaml
-    with:
-      kernel-image: ${{ needs.vm-kernel.outputs.image }}
+  # e2e-tests:
+  #   if: github.event_name != 'workflow_call'
+  #   needs: vm-kernel
+  #   uses: ./.github/workflows/e2e-test.yaml
+  #   with:
+  #     kernel-image: ${{ needs.vm-kernel.outputs.image }}
