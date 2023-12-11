@@ -3,142 +3,83 @@ package core
 // Implementation of (*State).Dump()
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/neondatabase/autoscaling/pkg/api"
 )
 
-func shallowCopy[T any](ptr *T) *T {
+func shallowCopy[T any](ptr *T, f ...func(T) T) *T {
 	if ptr == nil {
 		return nil
 	} else {
 		x := *ptr
+		if len(f) != 0 {
+			x = f[0](x)
+		}
 		return &x
 	}
 }
 
 // StateDump provides introspection into the current values of the fields of State
+//
+// It implements json.Marshaler.
 type StateDump struct {
-	Config  Config           `json:"config"`
-	VM      api.VmInfo       `json:"vm"`
-	Plugin  pluginStateDump  `json:"plugin"`
-	Monitor monitorStateDump `json:"monitor"`
-	NeonVM  neonvmStateDump  `json:"neonvm"`
-	Metrics *api.Metrics     `json:"metrics"`
+	internal internalState
+}
+
+func (d StateDump) MarshalJSON() ([]byte, error) {
+	return json.Marshal(d.internal)
 }
 
 // Dump produces a JSON-serializable copy of the State
 func (s *State) Dump() StateDump {
 	return StateDump{
-		Config:  s.internal.Config,
-		VM:      s.internal.VM,
-		Plugin:  s.internal.Plugin.dump(),
-		Monitor: s.internal.Monitor.dump(),
-		NeonVM:  s.internal.NeonVM.dump(),
-		Metrics: shallowCopy(s.internal.Metrics),
+		internal: internalState{
+			Debug:   s.internal.Debug,
+			Config:  s.internal.Config,
+			VM:      s.internal.VM,
+			Plugin:  s.internal.Plugin.deepCopy(),
+			Monitor: s.internal.Monitor.deepCopy(),
+			NeonVM:  s.internal.NeonVM.deepCopy(),
+			Metrics: shallowCopy[api.Metrics](s.internal.Metrics),
+		},
 	}
 }
 
-type pluginStateDump struct {
-	OngoingRequest bool                 `json:"ongoingRequest"`
-	ComputeUnit    *api.Resources       `json:"computeUnit"`
-	LastRequest    *pluginRequestedDump `json:"lastRequest"`
-	LastFailureAt  *time.Time           `json:"lastRequestAt"`
-	Permit         *api.Resources       `json:"permit"`
-}
-type pluginRequestedDump struct {
-	At        time.Time     `json:"time"`
-	Resources api.Resources `json:"resources"`
-}
-
-func (s *pluginState) dump() pluginStateDump {
-	var lastRequest *pluginRequestedDump
-	if s.LastRequest != nil {
-		lastRequest = &pluginRequestedDump{
-			At:        s.LastRequest.At,
-			Resources: s.LastRequest.Resources,
-		}
-	}
-
-	return pluginStateDump{
+func (s *pluginState) deepCopy() pluginState {
+	return pluginState{
 		OngoingRequest: s.OngoingRequest,
-		ComputeUnit:    shallowCopy(s.ComputeUnit),
-		LastRequest:    lastRequest,
-		LastFailureAt:  shallowCopy(s.LastFailureAt),
-		Permit:         shallowCopy(s.Permit),
+		ComputeUnit:    shallowCopy[api.Resources](s.ComputeUnit),
+		LastRequest: shallowCopy(s.LastRequest, func(r pluginRequested) pluginRequested {
+			return pluginRequested{At: r.At, Resources: r.Resources}
+		}),
+		LastFailureAt: shallowCopy[time.Time](s.LastFailureAt),
+		Permit:        shallowCopy[api.Resources](s.Permit),
 	}
 }
 
-type monitorStateDump struct {
-	OngoingRequest     *OngoingMonitorRequestDump `json:"ongoingRequest"`
-	RequestedUpscale   *requestedUpscaleDump      `json:"requestedUpscale"`
-	DeniedDownscale    *deniedDownscaleDump       `json:"deniedDownscale"`
-	Approved           *api.Resources             `json:"approved"`
-	DownscaleFailureAt *time.Time                 `json:"downscaleFailureAt"`
-	UpscaleFailureAt   *time.Time                 `json:"upscaleFailureAt"`
-}
-type OngoingMonitorRequestDump struct {
-	Kind      monitorRequestKind `json:"kind"`
-	Requested api.Resources      `json:"resources"`
-}
-type requestedUpscaleDump struct {
-	At        time.Time         `json:"at"`
-	Base      api.Resources     `json:"base"`
-	Requested api.MoreResources `json:"requested"`
-}
-type deniedDownscaleDump struct {
-	At        time.Time     `json:"at"`
-	Current   api.Resources `json:"current"`
-	Requested api.Resources `json:"requested"`
-}
-
-func (s *monitorState) dump() monitorStateDump {
-	var requestedUpscale *requestedUpscaleDump
-	if s.RequestedUpscale != nil {
-		requestedUpscale = &requestedUpscaleDump{
-			At:        s.RequestedUpscale.At,
-			Base:      s.RequestedUpscale.Base,
-			Requested: s.RequestedUpscale.Requested,
-		}
-	}
-
-	var deniedDownscale *deniedDownscaleDump
-	if s.DeniedDownscale != nil {
-		deniedDownscale = &deniedDownscaleDump{
-			At:        s.DeniedDownscale.At,
-			Current:   s.DeniedDownscale.Current,
-			Requested: s.DeniedDownscale.Requested,
-		}
-	}
-
-	var ongoingRequest *OngoingMonitorRequestDump
-	if s.OngoingRequest != nil {
-		ongoingRequest = &OngoingMonitorRequestDump{
-			Kind:      s.OngoingRequest.Kind,
-			Requested: s.OngoingRequest.Requested,
-		}
-	}
-
-	return monitorStateDump{
-		OngoingRequest:     ongoingRequest,
-		RequestedUpscale:   requestedUpscale,
-		DeniedDownscale:    deniedDownscale,
-		Approved:           shallowCopy(s.Approved),
-		DownscaleFailureAt: shallowCopy(s.DownscaleFailureAt),
-		UpscaleFailureAt:   shallowCopy(s.UpscaleFailureAt),
+func (s *monitorState) deepCopy() monitorState {
+	return monitorState{
+		OngoingRequest: shallowCopy(s.OngoingRequest, func(r ongoingMonitorRequest) ongoingMonitorRequest {
+			return ongoingMonitorRequest{Kind: r.Kind, Requested: r.Requested}
+		}),
+		RequestedUpscale: shallowCopy(s.RequestedUpscale, func(r requestedUpscale) requestedUpscale {
+			return requestedUpscale{At: r.At, Base: r.Base, Requested: r.Requested}
+		}),
+		DeniedDownscale: shallowCopy(s.DeniedDownscale, func(r deniedDownscale) deniedDownscale {
+			return deniedDownscale{At: r.At, Current: r.Current, Requested: r.Requested}
+		}),
+		Approved:           shallowCopy[api.Resources](s.Approved),
+		DownscaleFailureAt: shallowCopy[time.Time](s.DownscaleFailureAt),
+		UpscaleFailureAt:   shallowCopy[time.Time](s.UpscaleFailureAt),
 	}
 }
 
-type neonvmStateDump struct {
-	LastSuccess      *api.Resources `json:"lastSuccess"`
-	OngoingRequested *api.Resources `json:"ongoingRequested"`
-	RequestFailedAt  *time.Time     `json:"requestFailedAt"`
-}
-
-func (s *neonvmState) dump() neonvmStateDump {
-	return neonvmStateDump{
-		LastSuccess:      shallowCopy(s.LastSuccess),
-		OngoingRequested: shallowCopy(s.OngoingRequested),
-		RequestFailedAt:  shallowCopy(s.RequestFailedAt),
+func (s *neonvmState) deepCopy() neonvmState {
+	return neonvmState{
+		LastSuccess:      shallowCopy[api.Resources](s.LastSuccess),
+		OngoingRequested: shallowCopy[api.Resources](s.OngoingRequested),
+		RequestFailedAt:  shallowCopy[time.Time](s.RequestFailedAt),
 	}
 }
